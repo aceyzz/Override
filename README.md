@@ -22,9 +22,7 @@ Ce projet plonge dans l’exploitation logicielle offensive : reverse-engineerin
 
 ## Grade
 
-> En cours de construction
-
-<!-- <img src="./utils/100.png" alt="Grade" width="150"> -->
+<img src="./utils/125.png" alt="Grade" width="150">
 
 <br>
 
