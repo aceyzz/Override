@@ -37,11 +37,11 @@ Tout les binaires je les decompile et desassemble avec RetDec ou Ghidra via [Dog
 - [Level 02](./level02)
 - [Level 03](./level03)
 - [Level 04](./level04)
-<!-- - [Level 05](./level05)
+- [Level 05](./level05)
 - [Level 06](./level06)
 - [Level 07](./level07)
 - [Level 08](./level08)
-- [Level 09](./level09) (a voir si on le fait) -->
+- [Level 09](./level09)
 
 <br>
 
